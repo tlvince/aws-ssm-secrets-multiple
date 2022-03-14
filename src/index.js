@@ -8,35 +8,37 @@ const SSM = require('aws-sdk/clients/ssm');
 
   const ssm = new SSM();
 
-  let result;
   try {
-    const regex = /(\w+)=\s*([^,\s*]*)/gi;
-    let match;
-    const params = [];
+    const regex = /(?<envKey>\w+)=\s*(?<ssmParam>[^,\s*]*)/gi;
+    const params = {};
 
+    let match;
     while ((match = regex.exec(ssmParams)) !== null) {
-      params.push({ envKey: match[1].toUpperCase(), ssmParam: match[2] });
+      params[match.groups.ssmParam] = match.groups.envKey.toUpperCase();
     }
 
-    for (const { envKey, ssmParam } of params) {
-      result = await ssm
-        .getParameter({
-          Name: ssmParam,
-          WithDecryption: true,
-        })
-        .promise();
+    const getParametersRequest = {
+      Names: Object.keys(params),
+      WithDecryption: true,
+    };
 
-      const secret = result && result.Parameter && result.Parameter.Value;
+    const response = await ssm.getParameters(getParametersRequest).promise();
 
-      if (!secret) {
-        core.warning(`Secret ${envKey} seems to be empty`);
+    for (const parameter of response?.Parameters ?? []) {
+      const { Name: name, Value: value } = parameter;
+      if (!(name && value)) {
+        core.warning(`Value unset for ${name ?? 'param'} in getParameters response`);
+        continue;
       }
-
-      core.setSecret(secret || '');
-      core.exportVariable(envKey, secret);
+      const envKey = params[name];
+      core.setSecret(value);
+      core.exportVariable(envKey, value);
       core.info(`Secret ${envKey} injected`);
     }
-  } catch (error) /* istanbul ignore next */ {
+    if (response?.InvalidParameters.length) {
+      core.warning(`could not retrieve the following parameters: ${response.InvalidParameters.join(' ')}`);
+    }
+  } catch (error) {
     core.setFailed(error.message);
     throw error;
   }
